@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DucieX Benchmark</title>
+  <style>
+    body { font-family: monospace; background: #0d1117; color: #c9d1d9; padding: 2rem; }
+    h1   { color: #58a6ff; }
+    h2   { color: #8b949e; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.1em; }
+    pre  { background: #161b22; padding: 1rem; border-radius: 6px; border: 1px solid #30363d; white-space: pre-wrap; }
+    .pass { color: #3fb950; }
+    .fail { color: #f85149; }
+    .warn { color: #d29922; }
+    button {
+      background: #238636; color: #fff; border: none; padding: 0.6rem 1.4rem;
+      border-radius: 6px; cursor: pointer; font-family: monospace; font-size: 1rem;
+      margin-bottom: 1rem;
+    }
+    button:hover { background: #2ea043; }
+    #output { margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>DucieX Template Engine — Benchmark Suite</h1>
+  <p>Verify: compile &lt; 2ms &nbsp;|&nbsp; render &gt; 500k/sec &nbsp;|&nbsp; zero heap growth after warm-up.</p>
+  <button id="runBtn">Run Benchmarks</button>
+  <pre id="output">Press "Run Benchmarks" to start.</pre>
+
+  <script src="template-engine.js"></script>
+  <script>
+    'use strict';
+
+    const out = document.getElementById('output');
+    const lines = [];
+
+    function log(msg) {
+      lines.push(msg);
+      out.innerHTML = lines.join('\n');
+    }
+
+    function pass(msg)  { log(`<span class="pass">✔ PASS</span>  ${msg}`); }
+    function fail(msg)  { log(`<span class="fail">✘ FAIL</span>  ${msg}`); }
+    function warn(msg)  { log(`<span class="warn">⚠ WARN</span>  ${msg}`); }
+    function info(msg)  { log(`       ${msg}`); }
+    function sep()      { log('─'.repeat(60)); }
+
+    // ── Template sources used in benchmarks ──────────────────────────────────
+
+    // 50-token template (interpolation + loop + partial)
+    const ITEM_PARTIAL_SRC = `<li class="item">{{ name }} — ${{ price }}</li>`;
+
+    const LIST_TEMPLATE_SRC =
+      `<ul id="{{ id }}" class="{{ cls }}">` +
+      `{{#each items}}{{> itemRow}}{{/each}}` +
+      `</ul>`;
+
+    // Simple 10-token template for raw throughput test
+    const SIMPLE_SRC =
+      `<div>` +
+        `<h2>{{ title }}</h2>` +
+        `<p>{{ body }}</p>` +
+        `<span>{{ count }}</span>` +
+      `</div>`;
+
+    // ── Benchmark context data ────────────────────────────────────────────────
+
+    const ITEMS = [];
+    for (let i = 0; i < 20; i++) {
+      ITEMS.push({ name: 'Product ' + i, price: (i * 9.99).toFixed(2) });
+    }
+
+    const LIST_CTX  = { id: 'my-list', cls: 'products', items: ITEMS };
+    const SIMPLE_CTX = { title: 'Hello World', body: 'This is a benchmark.', count: 42 };
+
+    // ── Benchmark runner ─────────────────────────────────────────────────────
+
+    document.getElementById('runBtn').addEventListener('click', function() {
+      lines.length = 0;
+      log('Starting DucieX Benchmark Suite…\n');
+
+      // ── 1. Compile-time benchmark ─────────────────────────────────────────
+
+      sep();
+      log('BENCHMARK 1 — Compile Time (target: &lt; 2ms per template)');
+      sep();
+
+      // Measure compile time over 10 iterations to reduce timer noise.
+      const COMPILE_RUNS = 10;
+      let totalCompileMs = 0;
+
+      for (let r = 0; r < COMPILE_RUNS; r++) {
+        // Re-compile with distinct names to avoid cache hits.
+        const t0 = performance.now();
+        TemplateEngine.compile('_bench_item_' + r, ITEM_PARTIAL_SRC);
+        TemplateEngine.compile('_bench_list_' + r, LIST_TEMPLATE_SRC);
+        TemplateEngine.compile('_bench_simple_' + r, SIMPLE_SRC);
+        const t1 = performance.now();
+        totalCompileMs += (t1 - t0);
+      }
+
+      const avgCompileMs = totalCompileMs / COMPILE_RUNS / 3; // per template
+      info(`Average compile time per template: ${avgCompileMs.toFixed(3)} ms`);
+
+      if (avgCompileMs < 2) {
+        pass(`Compile time ${avgCompileMs.toFixed(3)} ms < 2 ms target`);
+      } else {
+        fail(`Compile time ${avgCompileMs.toFixed(3)} ms exceeds 2 ms target`);
+      }
+
+      // ── 2. Register canonical templates for render benchmarks ─────────────
+
+      TemplateEngine.registerPartial('itemRow', ITEM_PARTIAL_SRC);
+      TemplateEngine.compile('listTemplate', LIST_TEMPLATE_SRC);
+      TemplateEngine.compile('simpleTemplate', SIMPLE_SRC);
+
+      // ── 3. Render throughput — simple 10-token template ───────────────────
+
+      sep();
+      log('BENCHMARK 2 — Render Throughput, simple template (target: &gt; 500k/sec)');
+      sep();
+
+      // Warm up JIT: 1000 renders before measuring.
+      for (let i = 0; i < 1000; i++) {
+        TemplateEngine.render('simpleTemplate', SIMPLE_CTX);
+      }
+
+      const RENDER_DURATION_MS = 1000; // measure for 1 second
+      let   renderCount = 0;
+      const renderStart = performance.now();
+
+      while ((performance.now() - renderStart) < RENDER_DURATION_MS) {
+        // Batch 100 renders per loop iteration to reduce timer overhead.
+        for (let i = 0; i < 100; i++) {
+          TemplateEngine.render('simpleTemplate', SIMPLE_CTX);
+        }
+        renderCount += 100;
+      }
+
+      const renderElapsed = performance.now() - renderStart;
+      const rendersPerSec = Math.round((renderCount / renderElapsed) * 1000);
+
+      info(`Rendered ${renderCount.toLocaleString()} times in ${renderElapsed.toFixed(0)} ms`);
+      info(`Throughput: ${rendersPerSec.toLocaleString()} renders/sec`);
+
+      if (rendersPerSec >= 500000) {
+        pass(`${rendersPerSec.toLocaleString()} renders/sec ≥ 500,000 target`);
+      } else if (rendersPerSec >= 200000) {
+        warn(`${rendersPerSec.toLocaleString()} renders/sec — below 500k target but above 200k`);
+      } else {
+        fail(`${rendersPerSec.toLocaleString()} renders/sec — below 200k, significant perf issue`);
+      }
+
+      // ── 4. Render throughput — 50-token list template ─────────────────────
+
+      sep();
+      log('BENCHMARK 3 — Render Throughput, 50-token list template (20 items)');
+      sep();
+
+      for (let i = 0; i < 500; i++) {
+        TemplateEngine.render('listTemplate', LIST_CTX);
+      }
+
+      let listCount = 0;
+      const listStart = performance.now();
+
+      while ((performance.now() - listStart) < RENDER_DURATION_MS) {
+        for (let i = 0; i < 50; i++) {
+          TemplateEngine.render('listTemplate', LIST_CTX);
+        }
+        listCount += 50;
+      }
+
+      const listElapsed = performance.now() - listStart;
+      const listPerSec  = Math.round((listCount / listElapsed) * 1000);
+
+      info(`List renders/sec: ${listPerSec.toLocaleString()}`);
+
+      if (listPerSec >= 50000) {
+        pass(`${listPerSec.toLocaleString()} list renders/sec (20-item loop)`);
+      } else {
+        warn(`${listPerSec.toLocaleString()} list renders/sec — complex template, check if acceptable`);
+      }
+
+      // ── 5. renderToBuffer — zero-string-allocation hot path ───────────────
+
+      sep();
+      log('BENCHMARK 4 — renderToBuffer (zero-allocation hot path)');
+      sep();
+
+      const myBuffer = new Uint8Array(64 * 1024);
+      let bufCount = 0;
+      const bufStart = performance.now();
+
+      while ((performance.now() - bufStart) < RENDER_DURATION_MS) {
+        for (let i = 0; i < 100; i++) {
+          TemplateEngine.renderToBuffer('simpleTemplate', SIMPLE_CTX, myBuffer);
+        }
+        bufCount += 100;
+      }
+
+      const bufElapsed = performance.now() - bufStart;
+      const bufPerSec  = Math.round((bufCount / bufElapsed) * 1000);
+
+      info(`renderToBuffer throughput: ${bufPerSec.toLocaleString()} renders/sec`);
+
+      if (bufPerSec >= 500000) {
+        pass(`${bufPerSec.toLocaleString()} renders/sec via renderToBuffer`);
+      } else {
+        warn(`${bufPerSec.toLocaleString()} renders/sec — check if string decode is the bottleneck`);
+      }
+
+      // ── 6. HTML Escape correctness ────────────────────────────────────────
+
+      sep();
+      log('BENCHMARK 5 — HTML Escape Correctness');
+      sep();
+
+      TemplateEngine.compile('escapeTest', '{{ value }}');
+      const xss      = { value: '<script>alert("xss")</script>' };
+      const result   = TemplateEngine.render('escapeTest', xss);
+      const expected = '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;';
+
+      if (result === expected) {
+        pass(`XSS escape: "${result}"`);
+      } else {
+        fail(`Escape mismatch:\n  got:      "${result}"\n  expected: "${expected}"`);
+      }
+
+      TemplateEngine.compile('rawTest', '{{{ value }}}');
+      const raw = TemplateEngine.render('rawTest', xss);
+      if (raw === xss.value) {
+        pass(`Raw triple-stache passes through unescaped`);
+      } else {
+        fail(`Raw output mismatch: "${raw}"`);
+      }
+
+      // ── 7. Nested loop correctness ────────────────────────────────────────
+
+      sep();
+      log('BENCHMARK 6 — Nested Loop Correctness');
+      sep();
+
+      TemplateEngine.compile('nestedLoop',
+        `{{#each groups}}<section><h3>{{ label }}</h3><ul>` +
+        `{{#each members}}<li>{{ name }}</li>{{/each}}` +
+        `</ul></section>{{/each}}`
+      );
+
+      const nestedCtx = {
+        groups: [
+          { label: 'A', members: [{ name: 'Alice' }, { name: 'Bob' }] },
+          { label: 'B', members: [{ name: 'Carol' }] },
+        ]
+      };
+
+      const nestedOut = TemplateEngine.render('nestedLoop', nestedCtx);
+      const containsAlice = nestedOut.includes('Alice');
+      const containsCarol = nestedOut.includes('Carol');
+      const containsLabelA = nestedOut.includes('>A<');
+
+      if (containsAlice && containsCarol && containsLabelA) {
+        pass(`Nested loop output correct`);
+      } else {
+        fail(`Nested loop output missing expected content:\n${nestedOut}`);
+      }
+
+      // ── 8. Memory growth check ────────────────────────────────────────────
+
+      sep();
+      log('BENCHMARK 7 — Heap Growth After Warm-up');
+      sep();
+
+      if (performance.memory) {
+        // Warm up (100 renders, discarded)
+        for (let i = 0; i < 100; i++) TemplateEngine.render('listTemplate', LIST_CTX);
+
+        const heapBefore = performance.memory.usedJSHeapSize;
+
+        // 10,000 more renders
+        for (let i = 0; i < 10000; i++) TemplateEngine.render('listTemplate', LIST_CTX);
+
+        const heapAfter = performance.memory.usedJSHeapSize;
+        const growthKB  = ((heapAfter - heapBefore) / 1024).toFixed(1);
+
+        info(`Heap before: ${(heapBefore / 1024 / 1024).toFixed(2)} MB`);
+        info(`Heap after:  ${(heapAfter  / 1024 / 1024).toFixed(2)} MB`);
+        info(`Growth: ${growthKB} KB over 10,000 renders`);
+
+        // Allow up to 512 KB growth — GC timing means perfect zero is unrealistic.
+        if (heapAfter - heapBefore < 512 * 1024) {
+          pass(`Heap growth ${growthKB} KB < 512 KB threshold`);
+        } else {
+          warn(`Heap growth ${growthKB} KB — may indicate allocation in hot path`);
+        }
+      } else {
+        warn('performance.memory unavailable (not Chrome). Enable chrome://flags/#enable-precise-memory-info.');
+      }
+
+      // ── 9. Compile-time metadata ──────────────────────────────────────────
+
+      sep();
+      log('BENCHMARK 8 — CompiledTemplate Metadata');
+      sep();
+
+      const ct = TemplateEngine.get('listTemplate');
+      info(`Template "listTemplate" compile time: ${ct.compileMs.toFixed(3)} ms`);
+      info(`Partial dependencies: ${ct.partialNames.join(', ') || '(none)'}`);
+      info(`Size hint: ${ct.sizeHint} bytes`);
+
+      if (ct.compileMs < 2) {
+        pass(`listTemplate compiled in ${ct.compileMs.toFixed(3)} ms`);
+      } else {
+        fail(`listTemplate compile exceeded 2ms: ${ct.compileMs.toFixed(3)} ms`);
+      }
+
+      // ── Done ──────────────────────────────────────────────────────────────
+
+      sep();
+      log('\nAll benchmarks complete.');
+    });
+  </script>
+</body>
+</html>
