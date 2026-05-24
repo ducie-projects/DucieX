@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DucieX + HTMX — 1 000-item List Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body   { font-family: system-ui, sans-serif; background: #f6f8fa; color: #24292f; }
+    header { background: #24292f; color: #fff; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+    h1     { font-size: 1.2rem; }
+    main   { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    .toolbar {
+      display: flex; gap: 0.75rem; margin-bottom: 1.5rem; align-items: center;
+      flex-wrap: wrap;
+    }
+    button {
+      background: #0969da; color: #fff; border: none; padding: 0.5rem 1rem;
+      border-radius: 6px; cursor: pointer; font-size: 0.95rem;
+    }
+    button:hover { background: #0550ae; }
+    button.secondary {
+      background: #fff; color: #24292f; border: 1px solid #d0d7de;
+    }
+    button.secondary:hover { background: #f3f4f6; }
+    #timing { font-size: 0.85rem; color: #57606a; }
+
+    /* List styles */
+    #product-list {
+      list-style: none;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 0.75rem;
+    }
+    #product-list li {
+      background: #fff;
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .item-name  { font-weight: 500; }
+    .item-price { color: #1a7f37; font-variant-numeric: tabular-nums; }
+    .item-cat   { font-size: 0.78rem; color: #57606a; }
+    #product-list li.highlight { border-color: #0969da; background: #ddf4ff; }
+
+    #status-bar {
+      margin-top: 1rem;
+      font-size: 0.82rem;
+      color: #57606a;
+      min-height: 1.5em;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>DucieX + HTMX — 1 000-item Compiled Template Demo</h1>
+</header>
+
+<main>
+  <div class="toolbar">
+    <!--
+      hx-get        — fetch endpoint (intercepted by our mock XHR below)
+      hx-target     — DOM node to update
+      hx-swap       — swap strategy
+      hx-template   — the compiled template to render with the JSON response
+      hx-trigger    — what fires the request
+    -->
+    <button
+      id="loadBtn"
+      hx-get="/api/products"
+      hx-target="#product-list"
+      hx-swap="innerHTML"
+      hx-template="productList"
+      hx-trigger="click"
+    >Load 1 000 Products</button>
+
+    <button
+      id="filterBtn"
+      class="secondary"
+      hx-get="/api/products?cat=electronics"
+      hx-target="#product-list"
+      hx-swap="innerHTML"
+      hx-template="productList"
+      hx-trigger="click"
+    >Electronics Only</button>
+
+    <button
+      id="clearBtn"
+      class="secondary"
+      onclick="document.getElementById('product-list').innerHTML = ''; timing('');"
+    >Clear</button>
+
+    <span id="timing"></span>
+  </div>
+
+  <ul id="product-list"></ul>
+  <div id="status-bar"></div>
+</main>
+
+<!-- HTMX from CDN -->
+<script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"></script>
+<!-- DucieX engine -->
+<script src="template-engine.js"></script>
+
+<script>
+'use strict';
+
+// ── Helper ──────────────────────────────────────────────────────────────────
+function timing(msg) {
+  document.getElementById('timing').textContent = msg;
+}
+function status(msg) {
+  document.getElementById('status-bar').textContent = msg;
+}
+
+// ── Template definitions ─────────────────────────────────────────────────────
+
+// The partial renders a single product <li>.
+// Note: no hx-* attributes needed inside the partial — HTMX handles the outer element.
+TemplateEngine.registerPartial('productItem',
+  `<li class="{{ cls }}">` +
+    `<div>` +
+      `<div class="item-name">{{ name }}</div>` +
+      `<div class="item-cat">{{ category }}</div>` +
+    `</div>` +
+    `<span class="item-price">${{ price }}</span>` +
+  `</li>`
+);
+
+// The list template iterates over the `items` array using the partial.
+// The partial is pre-linked at compile time — no dynamic lookup at render.
+TemplateEngine.compile('productList',
+  `{{#each items}}{{> productItem}}{{/each}}`
+);
+
+const listTpl = TemplateEngine.get('productList');
+status(`Template compiled in ${listTpl.compileMs.toFixed(3)} ms`);
+
+// ── Mock data generator ──────────────────────────────────────────────────────
+
+const CATEGORIES = ['Electronics', 'Clothing', 'Books', 'Tools', 'Food', 'Sports'];
+
+function generateProducts(count, catFilter) {
+  const items = [];
+  for (let i = 0; i < count; i++) {
+    const cat = CATEGORIES[i % CATEGORIES.length];
+    if (catFilter && cat.toLowerCase() !== catFilter.toLowerCase()) continue;
+    items[items.length] = {
+      name:     `Product #${i + 1}`,
+      category: cat,
+      price:    (Math.random() * 200 + 1).toFixed(2),
+      cls:      i % 7 === 0 ? 'highlight' : '',
+    };
+  }
+  return items;
+}
+
+// ── HTMX mock XHR via htmx:configRequest / htmx:beforeSwap ──────────────────
+//
+// In production you would have a real server returning JSON.
+// Here we intercept the request in htmx:beforeRequest and synthesise a JSON body
+// so the demo works without a server.
+//
+// The DucieX htmx:beforeSwap handler (inside template-engine.js) then:
+//   1. Reads the JSON from evt.detail.xhr.responseText
+//   2. Renders the named template (hx-template attribute)
+//   3. Writes the HTML back into evt.detail.serverResponse
+// HTMX then performs the swap using that overridden HTML.
+
+// We store the mock response here so the fake XHR stub below can expose it.
+let _mockResponseText = '';
+
+// htmx:beforeRequest — generate mock data and inject it into a fake xhr stub.
+document.body.addEventListener('htmx:beforeRequest', function(evt) {
+  const url = evt.detail.requestConfig.path;
+  let items;
+
+  if (url.includes('cat=electronics')) {
+    items = generateProducts(1000, 'Electronics');
+  } else {
+    items = generateProducts(1000);
+  }
+
+  _mockResponseText = JSON.stringify({ items });
+
+  // Abort the real XHR and replace it with a fake that returns our payload.
+  // We cancel via evt.preventDefault() and manually fire htmx:afterRequest.
+  evt.preventDefault();
+
+  const t0 = performance.now();
+
+  // Manually invoke the DucieX beforeSwap logic by dispatching a synthetic event.
+  const fakeXhr = { responseText: _mockResponseText, status: 200 };
+  const elt     = evt.detail.elt;
+  const target  = document.querySelector(elt.getAttribute('hx-target'));
+  const swap    = elt.getAttribute('hx-swap') || 'innerHTML';
+  const templateName = elt.getAttribute('hx-template');
+
+  if (templateName) {
+    const template = TemplateEngine.get(templateName);
+    if (template) {
+      let ctx;
+      try { ctx = JSON.parse(fakeXhr.responseText); } catch(e) { return; }
+
+      // Build partials map (same logic as inside template-engine.js).
+      const partialsMap = Object.create(null);
+      const pnames = template.partialNames;
+      for (let i = 0; i < pnames.length; i++) {
+        const p = TemplateEngine.get(pnames[i]);
+        if (p) partialsMap[pnames[i]] = p.fn;
+      }
+      Object.freeze(partialsMap);
+
+      // Render into shared buffer → decode to string → inject into DOM.
+      const byteLen = template.fn(ctx, TemplateEngine.sharedBuffer, 0, partialsMap);
+      const html    = new TextDecoder().decode(TemplateEngine.sharedBuffer.subarray(0, byteLen));
+
+      const t1      = performance.now();
+      const renderMs = (t1 - t0).toFixed(2);
+
+      // Use requestAnimationFrame for the DOM write to stay in sync with the browser.
+      requestAnimationFrame(function() {
+        if (swap === 'innerHTML') {
+          target.innerHTML = html;
+        } else {
+          target.outerHTML = html;
+        }
+        const t2 = performance.now();
+        timing(`Render: ${renderMs} ms  |  DOM commit: ${(t2 - t1).toFixed(2)} ms`);
+        status(`Displaying ${items.length.toLocaleString()} items.`);
+      });
+    }
+  }
+});
+</script>
+
+</body>
+</html>
